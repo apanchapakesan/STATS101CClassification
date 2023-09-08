@@ -1,0 +1,81 @@
+```{r, echo = FALSE, message=FALSE}
+library(knitr)
+library(tidyverse)
+library(tidymodels)
+library(stringr)
+library(corrplot)
+library(yardstick)
+library(ranger)
+library(xgboost)
+library(baguette)
+library(glmnet)
+library(kknn)
+library(stacks)
+```
+
+```{r data setup}
+
+# SET THE WD TO YOUR FOLDER
+
+trainFilepath <- paste0(getwd(),"/train2.csv")
+testFilepath <- paste0(getwd(),"/test2.csv")
+metadataFilepath <- paste0(getwd(),"/metadata.csv")
+
+train <- read.csv(trainFilepath)
+test <- read.csv(testFilepath)
+metadata <- read.csv(metadataFilepath)
+
+```
+
+```{r data view}
+
+nrow(train)
+ncol(train)
+
+view(metadata)
+
+head(train)
+
+```
+
+```{r data analysis}
+
+# action_taken analysis
+action_taken_dist_plot <- train %>% ggplot() + geom_histogram(aes(x = action_taken), binwidth = 1, color = "grey", fill = "burlywood4") + labs(title = "Action_Taken Frequencies", x = "Loan Approved/Loan Denied", y = "Frequency of Loan Applications") + theme_minimal()
+
+# NOTE: mathematically, should we change all 3's into 2's? just thinking of the math of the models, and the decision making algorithm might work better with values of 1 and 2 rather 1 and 3
+
+# loan amount analysis
+loan_dist_plot <- train %>% mutate(loan_amount = log(loan_amount)) %>% ggplot() + geom_histogram(aes(x = loan_amount), bins = 100, color = "grey",fill = "cadetblue3") + labs(title = "Log-Transformed Distribution of Loan_Amount", x = "Log of Loan_Amount", y = "Frequency") + theme_minimal()
+train %>% slice_max(loan_amount)
+train %>% select(loan_amount) %>% summary()
+# loan_amount is so distributed still even after a log transformation
+
+# geom plot of frequency of loans
+
+
+
+# geom plot of most money loaned
+
+# race
+
+```
+
+```{r cross validation creation}
+
+set.seed(101)
+
+# stratify the response variable because uneven distribution of classes
+train_split <- train %>% vfold_cv(v = 10, strata = action_taken)
+
+```
+
+```{r recipe creation}
+
+rec <- recipe(action_taken ~ ., data = train)
+
+# making new training dataset that changes 3's into 2's
+rec2 <- recipe(action_taken ~ ., data = train) %>% step_mutate_at(action_taken, fn = function(x) if_else(x == 3, 2, 1))
+# head(rec2 %>% prep() %>% bake(new_data = NULL) %>% select(action_taken), n =20)
+
+```
