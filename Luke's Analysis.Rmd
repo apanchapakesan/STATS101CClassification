@@ -45,19 +45,50 @@ action_taken_dist_plot <- train %>% ggplot() + geom_histogram(aes(x = action_tak
 
 # NOTE: mathematically, should we change all 3's into 2's? just thinking of the math of the models, and the decision making algorithm might work better with values of 1 and 2 rather 1 and 3
 
-# loan amount analysis
+# ANALYZE loan amount analysis
 loan_dist_plot <- train %>% mutate(loan_amount = log(loan_amount)) %>% ggplot() + geom_histogram(aes(x = loan_amount), bins = 100, color = "grey",fill = "cadetblue3") + labs(title = "Log-Transformed Distribution of Loan_Amount", x = "Log of Loan_Amount", y = "Frequency") + theme_minimal()
 train %>% slice_max(loan_amount)
 train %>% select(loan_amount) %>% summary()
-# loan_amount is so distributed still even after a log transformation
+# RESULT: loan_amount is so distributed still even after a log transformation, there must be some sort of scaling and normalization of loan_amount
 
-# geom plot of frequency of loans
+# ANALYZE income
+train %>% slice_min(income, n = 10)
+# umm, why are there negative incomes? for people in debt?
+# get which people are negative incomes, plot their loan status
+train %>% filter(income < 0) %>% ggplot() + geom_bar(aes(x = action_taken)) + labs(title = "Action_Taken for Applicants with Negative Income", x = "Action_Taken (1 = Loan Approve, 3 = Loan Denied)", y = "Frequency")
+normalize_neg1_pos1 <- function(x){(2*(x - min(x)) / (max(x) - min(x))) - 1}
+normalize_neg1_pos1(seq(-10,5))
+# make label of which loan applicant is negative and positive
+lab_income_train <- train %>% select(income) %>% filter(!is.na(income)) %>% mutate(posIncome = if_else(income >= 0, TRUE, FALSE))
+
+lab_income_plot <- lab_income_train %>% filter(posIncome == TRUE) %>% ggplot(aes(x = income)) + geom_histogram(bins = 20)
+# highly right skewed graph
 
 
+# ANALYZE ethinicity applicant
+train %>% select(12:16) %>% summary()
 
-# geom plot of most money loaned
+# ANALYZE race frequency
 
-# race
+# get caption to look okay
+# metadata$X
+cap_str <- gsub("[[:blank:]](?=\\d)", " \\| ","1. American Indian or Alaska Native 2. Asian 21. Asian Indian 22. Chinese 23. Filipino \n24. Japanese 25. Korean 26. Vietnamese 27. Other Asian 3. Black or African American \n4. Native Hawaiian or Other Pacific Islander 41. Native Hawaiian \n42. Guamanian or Chamorro 43. Samoan 44. Other Pacific Islander 5. White \n6. Information not provided by applicant in mail internet or telephone application 7. Not applicable.", perl = TRUE)
+
+train %>% filter(!is.na(race_of_applicant_or_borrower_1)) %>% ggplot(aes(x = race_of_applicant_or_borrower_1)) + geom_bar()
+race_df <- train %>% pull(race_of_applicant_or_borrower_1) %>% as.character() %>% as.data.frame() 
+race_df <- rename(race_df, race = .) %>% mutate(n = 1) %>% group_by(race) %>% summarize(count = n())
+race_df %>% ggplot() + 
+  geom_bar(aes(x = race, y = count), stat = "identity", fill = "lightblue", color = "grey") + 
+  labs(title = "Loan Applicant's Primary Race Frequencies", x = "Race ID", caption = cap_str, y = "Frequency") + 
+  theme(plot.caption = element_text(size = 11, hjust = 0))
+
+# str_view_all("1.| American Indian or Alaska Native 2. Asian 21. Asian Indian 22. Chinese 23. Filipino \n24. Japanese 25. Korean 26. Vietnamese 27. Other Asian 3. Black or African American \n4. Native Hawaiian or Other Pacific Islander 41. Native Hawaiian \n42. Guamanian or Chamorro 43. Samoan 44. Other Pacific Islander 5. White \n6. Information not provided by applicant in mail internet or telephone application 7. Not applicable.", "\\|")
+# gsub(" (?=2)","\\|","hello 2world", perl = TRUE)
+
+# RESULT: this graph showcases that even in the primary applicant's race category, the majority of the races is white, so stratify all the race columns 
+
+
+# ANALYZE age frequency
 
 ```
 
@@ -66,7 +97,9 @@ train %>% select(loan_amount) %>% summary()
 set.seed(101)
 
 # stratify the response variable because uneven distribution of classes
-train_split <- train %>% vfold_cv(v = 10, strata = action_taken)
+colnames()
+train_split <- train %>% vfold_cv(v = 10, strata = c("action_taken",))
+help(vfold_cv)
 
 ```
 
