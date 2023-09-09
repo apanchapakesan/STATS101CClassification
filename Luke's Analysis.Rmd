@@ -11,6 +11,9 @@ library(baguette)
 library(glmnet)
 library(kknn)
 library(stacks)
+library(MASS)
+library(earth)
+library(brulee)
 ```
 
 ```{r data setup}
@@ -61,12 +64,13 @@ normalize_neg1_pos1(seq(-10,5))
 # make label of which loan applicant is negative and positive
 lab_income_train <- train %>% select(income) %>% filter(!is.na(income)) %>% mutate(posIncome = if_else(income >= 0, TRUE, FALSE))
 
-lab_income_plot <- lab_income_train %>% filter(posIncome == TRUE) %>% ggplot(aes(x = income)) + geom_histogram(bins = 20)
+lab_income_plot <- lab_income_train %>% filter(posIncome == TRUE) %>% ggplot(aes(x = income)) + geom_bar(stat = "identity", position = "identity")
+# TODO: make bidrectional graph showing distribution of negative and positive income for each bracket of income
 # highly right skewed graph
 
 
-# ANALYZE ethinicity applicant
-train %>% select(12:16) %>% summary()
+# # ANALYZE ethinicity applicant
+# train %>% select(12:16) %>% summary()
 
 # ANALYZE race frequency
 
@@ -77,10 +81,10 @@ cap_str <- gsub("[[:blank:]](?=\\d)", " \\| ","1. American Indian or Alaska Nati
 train %>% filter(!is.na(race_of_applicant_or_borrower_1)) %>% ggplot(aes(x = race_of_applicant_or_borrower_1)) + geom_bar()
 race_df <- train %>% pull(race_of_applicant_or_borrower_1) %>% as.character() %>% as.data.frame() 
 race_df <- rename(race_df, race = .) %>% mutate(n = 1) %>% group_by(race) %>% summarize(count = n())
-race_df %>% ggplot() + 
+loan_app_race_freq_plot <- race_df %>% ggplot() + 
   geom_bar(aes(x = race, y = count), stat = "identity", fill = "lightblue", color = "grey") + 
   labs(title = "Loan Applicant's Primary Race Frequencies", x = "Race ID", caption = cap_str, y = "Frequency") + 
-  theme(plot.caption = element_text(size = 11, hjust = 0))
+  theme(plot.caption = element_text(size = 9, hjust = 0))
 
 # str_view_all("1.| American Indian or Alaska Native 2. Asian 21. Asian Indian 22. Chinese 23. Filipino \n24. Japanese 25. Korean 26. Vietnamese 27. Other Asian 3. Black or African American \n4. Native Hawaiian or Other Pacific Islander 41. Native Hawaiian \n42. Guamanian or Chamorro 43. Samoan 44. Other Pacific Islander 5. White \n6. Information not provided by applicant in mail internet or telephone application 7. Not applicable.", "\\|")
 # gsub(" (?=2)","\\|","hello 2world", perl = TRUE)
@@ -92,14 +96,71 @@ race_df %>% ggplot() +
 
 ```
 
-```{r cross validation creation}
+--------------------------------------------
 
+```{r training split based on action_taken}
+# NOTE: don't run the entire script, the var name "train_split" will be shared
 set.seed(101)
 
 # stratify the response variable because uneven distribution of classes
-colnames()
-train_split <- train %>% vfold_cv(v = 10, strata = c("action_taken",))
-help(vfold_cv)
+train_split <- train %>% initial_split(strata = action_taken)
+
+train_train <- training(train_split)
+train_test <- testing(train_split)
+
+```
+
+```{r training split based on loan amount}
+
+# NOTE: don't run the entire script, the var name "train_split" will be shared
+set.seed(101)
+
+# stratify the response variable because uneven distribution of classes
+train_split <- train %>% initial_split(strata = loan_amount)
+
+train_train <- training(train_split)
+train_test <- testing(train_split)
+
+```
+
+```{r training split based on primary race of applicant}
+
+# NOTE: don't run the entire script, the var name "train_split" will be shared
+set.seed(101)
+
+# stratify the response variable because uneven distribution of classes
+train_split <- train %>% initial_split(strata = race_of_applicant_or_borrower_1)
+
+train_train <- training(train_split)
+train_test <- testing(train_split)
+
+```
+
+--------------------------------------------
+
+```{r vfold creaction}
+
+# always going to stratify by response variable
+train_folds <- vfold_cv(train_train, v = 10, strata = action_taken)
+
+```
+
+
+```{r model declaration}
+
+decision_tree_model <- decision_tree(cost_complexity = tune()) %>% set_engine("rpart") %>% set_mode("classification")
+
+boost_tree_model <- boost_tree(learn_rate = tune(), loss_reduction = tune()) %>% set_engine("xgboost") %>% set_mode("classification")
+
+nn_model <- bag_mlp(hidden_units = tune(), epochs = 500) %>% set_engine("nnet") %>% set_mode("classification")
+
+lin_disc_model <- discrim_linear() %>% set_engine("MASS") %>% set_mode("classification") 
+
+flex_lin_disc_model <- discrim_flexible(num_terms = tune(), prod_degree = tune()) %>% set_engine("earth") %>% set_mode("classification")
+
+log_model <- logistic_reg() %>% set_engine("glmnet") %>% set_mode("classification")
+
+# multi_nn_model 
 
 ```
 
@@ -110,5 +171,11 @@ rec <- recipe(action_taken ~ ., data = train)
 # making new training dataset that changes 3's into 2's
 rec2 <- recipe(action_taken ~ ., data = train) %>% step_mutate_at(action_taken, fn = function(x) if_else(x == 3, 2, 1))
 # head(rec2 %>% prep() %>% bake(new_data = NULL) %>% select(action_taken), n =20)
+
+```
+
+```{r metric set creation}
+
+wf_metrics <- metric_set(roc_auc, f_meas)
 
 ```
