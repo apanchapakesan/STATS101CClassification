@@ -1,0 +1,458 @@
+---
+title: "Loan Outcome Prediction Project"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#load libraries into R
+library(readr)
+library(ggplot2)
+library(gridExtra)
+library(recipes)
+library(tidyr)
+library(glmnet)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(naivebayes)
+library(e1071)
+library(dplyr)
+library(tidymodels)
+library(xgboost)
+```
+
+```{r}
+#load data
+training.set <- read_csv("train2.csv")
+testing.set <- read_csv("test2.csv")
+head(training.set)
+```
+
+  *Exploratory Data Analysis (EDA)*
+  
+```{r warning=FALSE}
+plot1 <- ggplot(training.set, aes(x = as.factor(action_taken), y = loan_amount)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Loan Amount by Action Taken", x = "Action Taken", y = " Loan Amount") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot2 <- ggplot(training.set, aes(x = as.factor(action_taken), y = property_value)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Property Value by Action Taken", x = "Action Taken", y = "Property Value") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot3 <- ggplot(training.set, aes(x = as.factor(action_taken), y = income)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Income by Action Taken", x = "Action Taken", y = "Income") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot4 <- ggplot(training.set, aes(x = as.factor(action_taken), y = combined_loan_to_value_ratio)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Loan to Value Ratio by Action Taken", x = "Action Taken", y = "Loan to Value Ratio") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Arrange the plots in a 2x2 grid
+grid.arrange(plot1, plot2, plot3, plot4, ncol = 2)
+```
+
+```{r}
+ggplot(training.set, aes(x = as.factor(action_taken), y = loan_term)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Loan Term by Action Taken", x = "Action Taken", y = "Loan to Value Ratio") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+```{r}
+# Numeric columns to create scatter plots for
+numeric_columns <- c("property_value", "loan_term", 
+                     "combined_loan_to_value_ratio", "income", "loan_amount")
+
+# Create a new dataframe containing only the selected columns
+num_vars <- training.set[numeric_columns]
+pairs(num_vars)
+```
+
+```{r warning=FALSE}
+subset_data <- training.set[, numeric_columns]
+# Create a box plot for property_value
+bplt1 <- ggplot(subset_data, aes(y = property_value)) +
+  geom_boxplot() +
+  labs(
+    title = "Box Plot of Property Value",
+    y = "Property Value"
+  )
+# Create a box plot for loan term
+bplt2 <-ggplot(subset_data, aes(y = loan_term)) +
+  geom_boxplot() +
+  labs(
+    title = "Box Plot of Loan Term ",
+    y = "Property Value"
+  )
+# Create a box plot for property_value
+bplt3 <-ggplot(subset_data, aes(y = combined_loan_to_value_ratio)) +
+  geom_boxplot() +
+  labs(
+    title = "Box Plot of Combined Loan to Value Ratio",
+    y = "Property Value"
+  )
+
+bplt4 <-ggplot(subset_data, aes(y = income)) +
+  geom_boxplot() +
+  labs(
+    title = "Box Plot of Income",
+    y = "Property Value"
+  )
+# Arrange the plots in a 2x2 grid
+grid.arrange(bplt1, bplt2, bplt3, bplt4, ncol = 2)
+```
+
+```{r}
+library(purrr)
+subset_data$action_taken <- training.set$action_taken
+subset_data %>% split(.$action_taken) %>%
+  map(summary)
+```
+
+```{r}
+result <- training.set %>%
+  group_by(state) %>%
+  summarise(loan_accept_rate = sum(action_taken == 1)/ sum(action_taken)
+  )
+# Filter data to keep only acceptance rates above 0.4
+acceptance_rates_abv <- result %>%
+  filter(loan_accept_rate > 0.4)
+# Create a bar chart
+ggplot(acceptance_rates_abv, aes(x = state, y = loan_accept_rate)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Loan Acceptance Rate by State above 40%", x = "State", y = "Acceptance Rate")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+# Filter data to keep only acceptance rates above 0.4
+acceptance_rates_filtered <- result %>%
+  filter(loan_accept_rate < 0.4)
+# Create a bar chart
+ggplot(acceptance_rates_filtered, aes(x = state, y = loan_accept_rate)) +
+  geom_bar(stat = "identity", fill = "blue") +
+  labs(title = "Loan Acceptance Rate by State: Less than 40% ", x = "State", y = "Acceptance Rate")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),plot.title = element_text(hjust = 0.5))
+```
+
+
+*Data Preparation and Feature Selection*
+
+```{r}
+# Check for missing values
+missing_values <- is.na(training.set)
+# Count missing values by column
+missing_count <- colSums(missing_values)
+#Sort the missing value counts in descending order
+sorted_missing_count <- missing_count[order(-missing_count)]
+# Print the sorted missing value counts
+print(sorted_missing_count)
+```
+
+```{r}
+# Get the column names with missing values less than or equal to the threshold
+threshold <- 100000
+columns_to_keep <- names(missing_count[missing_count <= threshold])
+
+# Subset the data frame to keep only the selected columns
+training.set <- training.set[, columns_to_keep]
+
+```
+
+```{r}
+#mean imputation:: group means (action_taken)
+
+df_grouped_means <- training.set %>%
+  group_by(action_taken) %>%
+  summarize(mean_property_value = mean(property_value, na.rm = TRUE),
+            mean_lvratio = mean(combined_loan_to_value_ratio, na.rm = TRUE),
+            mean_income =mean(income, na.rm = TRUE) )
+
+```
+
+```{r}
+training.set.clean <- training.set %>%
+  left_join(df_grouped_means, by = "action_taken") %>%
+  mutate(
+    property_value = ifelse(
+      is.na(property_value),
+      mean_property_value,
+      property_value
+    ),
+    combined_loan_to_value_ratio = ifelse(
+      is.na(combined_loan_to_value_ratio),
+      mean_lvratio,
+      combined_loan_to_value_ratio
+    ),
+    income = ifelse(
+      is.na(income),
+      mean_income,
+      income
+    )
+  )%>% select(-mean_property_value, -mean_lvratio,-mean_income ) 
+ 
+#drop the remaining rows with missing values
+training.set.clean <- na.omit(training.set)
+#remove cases where income is negative
+training.set.clean <- training.set.clean[training.set.clean$income >= 0, ]
+
+#drop other irrelevant variables (i.e., id, activity year, legal entity identifier, etc)
+# Remove the "Age" and "ID" columns
+training.set.clean <- training.set.clean[, !(names(training.set.clean) %in% c("id","state", "activity_year","preapproval","negative_amortization","reverse_mortgage", "legal_entity_identifier_lei"))]
+```
+
+```{r}
+# Check for duplicate rows
+training.set.clean %>%
+  filter(duplicated(.) | duplicated(., fromLast = TRUE))
+```
+
+```{r}
+# Remove duplicates from a dataframe df
+training.set.clean <- training.set.clean %>%
+  distinct()
+```
+
+```{r}
+#define numeric variables in our dataset
+numeric_columns <- c("total_units", "property_value","loan_term" ,"combined_loan_to_value_ratio","income", "loan_amount")
+
+# Convert all columns to factors except the numeric ones
+training.set.clean[, !(names(training.set.clean) %in% numeric_columns)] <- lapply(training.set.clean[, !(names(training.set.clean) %in% numeric_columns)], as.factor)
+
+# Print the resulting data frame
+print(training.set.clean)
+```
+
+```{r}
+# Define the columns to remove outliers from
+columns_to_check <- c("property_value", "income","loan_amount")
+
+# Function to remove outliers using IQR
+remove_outliers <- function(data, columns) {
+  for (col in columns) {
+    q1 <- quantile(data[[col]], 0.25)
+    q3 <- quantile(data[[col]], 0.75)
+    iqr <- q3 - q1
+    lower_bound <- q1 - 1.5 * iqr
+    upper_bound <- q3 + 1.5 * iqr
+    data <- data[data[[col]] >= lower_bound & data[[col]] <= upper_bound, ]
+  }
+  return(data)
+}
+
+# Remove outliers from selected columns
+training.set.clean <- remove_outliers(training.set.clean, columns_to_check)
+
+
+```
+
+```{r warning=FALSE}
+# Create a recipe with ID and response variables
+rec <- recipe(action_taken ~., data=training.set.clean) %>%
+  step_normalize(all_numeric())%>%
+  step_zv(all_numeric(), -all_outcomes())%>%
+  step_corr(all_numeric_predictors(), threshold = 0.8)%>%
+  step_dummy(all_nominal(), -all_outcomes(),one_hot = FALSE)%>%
+  
+  
+  prep()
+training_data <- bake(rec, new_data = training.set.clean)
+
+```
+
+
+```{r warning=FALSE}
+#prepare testing set (i.e., ensure variables match with training set)
+colmatch <- colnames(training.set.clean[,2:40])
+testing.set.clean <- testing.set[,colmatch]
+testing.set.clean$action_taken <- 1
+
+# Convert all columns to factors except the numeric ones
+testing.set.clean[, !(names(testing.set.clean) %in% numeric_columns)] <- lapply(testing.set.clean[, !(names(testing.set.clean) %in% numeric_columns)], as.factor)
+testing_data <- bake(rec, new_data = testing.set.clean)
+
+```
+
+
+```{r}
+# Split the data into training and testing sets
+target_variable <- "action_taken"
+
+set.seed(456)  # Set seed for reproducibility
+training_indices <- createDataPartition(training_data[[target_variable]], p = 0.8, list = FALSE)
+train <- training_data[training_indices, ]
+test <- training_data[-training_indices, ]
+```
+
+*Model 1: Logistic Regression Model*
+
+```{r warning=FALSE}
+
+# Train a logistic regression model
+model <- glm(action_taken ~ ., data = train, family = binomial)
+
+# Make predictions on the testing set
+predictions <- predict(model, newdata = test, type = "response")
+
+# Convert predictions to class labels (1, or 3)
+predicted_classes <- ifelse(predictions > 0.5, 3,1) #1 is positive class
+```
+
+```{r}
+# Evaluate the model (e.g., using confusion matrix and accuracy)
+confusion_matrix.log <- confusionMatrix(factor(predicted_classes), factor(test[[target_variable]]))
+confusion_matrix.log
+```
+
+```{r}
+# Define the hyperparameters grid
+alpha_values <- seq(0, 1, by = 0.1)  # Try different alpha values (0 to 1)
+lambda_values <- seq(0.01, 1, by = 0.01)  # Try different lambda values
+
+# Create a grid of hyperparameters
+hyperparameters <- expand.grid(alpha = 0, lambda = 0.1)
+
+# Create a train control object for cross-validation
+ctrl <- trainControl(method = "cv", number = 10)  # 5-fold cross-validation
+
+# Perform hyperparameter tuning with cross-validation
+model <- train(
+  action_taken ~ ., 
+  data = train, 
+  method = "glmnet", 
+  trControl = ctrl,
+  tuneGrid = hyperparameters
+)
+```
+
+
+
+*Model 2: Decision Trees*
+```{r}
+# decision tree model
+DT.model <- rpart(action_taken ~ ., data = train)
+# Make predictions on the test data
+predictions <- predict(DT.model, newdata = test, type = "class")
+confusion_matrix.DT <- confusionMatrix(test$action_taken, predictions)
+confusion_matrix.DT
+
+```
+
+```{r}
+#optimize predictive performance using hyperparameter tuning
+set.seed(123)
+train_control <- trainControl(method = "repeatedcv",   # Use cross validation
+                              number = 5,             # Use 10 partitions
+                              repeats = 2)             # Repeat 2 times
+
+# Set required parameters for the model type we are using**
+tune_grid = expand.grid(cp=c(0.00001))
+
+tree <- train(as.factor(action_taken) ~., data=training_data,                 # Data set
+                        method="rpart",                     # Model type(decision tree)
+                        trControl= train_control,           # Model control options
+                        tuneGrid = tune_grid,               # Required model parameters
+                        maxdepth = 10,                      # Additional parameters***
+                        minbucket=5)
+
+#summary of the model
+tree
+
+```
+
+
+```{r}
+best_DT.tree <- tree$finalModel
+predictions <- predict(best_DT.tree, newdata = test, type = "class")
+confusion_matrix.bDT <- confusionMatrix(test$action_taken, predictions)
+confusion_matrix.bDT$overall
+```
+
+*Model 3: Naive Bayes*
+
+```{r}
+# Train a Naive Bayes classifier
+nb_model <- naiveBayes(action_taken ~ ., data = train)
+
+# Make predictions on the test data
+predictions <- predict(nb_model, newdata = test, type = "class")
+# Create a confusion matrix to evaluate the model
+confusion_matrix.nb <- confusionMatrix(test$action_taken, predictions)
+print(confusion_matrix.nb)
+```
+
+
+*Model 4: XGB Boosting*
+```{r}
+#XGB boosting works with data as presented as matrix
+
+train_matrix <- as.matrix(train[, -6])  # Exclude the target variable
+test_matrix <- as.matrix(test[, -6])    # Exclude the target variable
+
+
+# Modify the target variable based on the 'action taken' column:: works with target variable encoded as 1 or 0
+train_labels <- ifelse(train$action_taken == 3, 0, 1)
+test_labels <- ifelse(test$action_taken == 3, 0, 1)
+
+dtrain = xgb.DMatrix(data=train_matrix, label=train_labels)
+dtest = xgb.DMatrix(data = test_matrix, label=test_labels)
+
+#default parameters
+params <- list(booster = "gbtree", objective = "binary:logistic", eta=0.3, gamma=0, max_depth=6, min_child_weight=1, subsample=1, colsample_bytree=1)
+xgbcv <- xgb.cv( params = params, data = dtrain, nrounds = 100, nfold = 5, showsd = T, stratified = T, print.every.n = 10, early.stop.round = 20, maximize = F)
+```
+
+
+
+*Final Model: XGB Boosting Trees*
+
+```{r}
+set.seed(124)
+xgb1 <- xgb.train (params = params, data = dtrain, nrounds = xgbcv$best_iteration, watchlist = list(val=dtest,train=dtrain), print_every_n = 10, early_stopping_rounds = 10, maximize = F , eval_metric = "error")
+```
+
+```{r}
+xgbpred <- predict (xgb1,dtest)
+xgbpred <- ifelse (xgbpred >= 0.5,1,3)
+confusionMatrix(factor(xgbpred),factor(test$action_taken))
+```
+
+```{r}
+train.st=as.matrix(testing_data[,-6])
+ln_label <- testing_data$action_taken
+test.data <- xgb.DMatrix(data=train.st, label=ln_label)
+
+xgbpred <- predict (xgb1,test.data)
+preds <- ifelse (xgbpred >= 0.5,1,3)
+prediction_xgb <- data.frame(id = testing.set$id, action_taken = preds, prob = xgbpred)
+
+#export as csv
+write.csv(prediction_xgb, "submission.csv", row.names=FALSE)
+```
+
+
+
+
+
+
+
+
+
