@@ -139,7 +139,7 @@ action_taken_dist_plot <- train %>% ggplot() + geom_histogram(aes(x = action_tak
 # ANALYZE loan amount analysis
 loan_dist_plot <- train %>% mutate(loan_amount = log(loan_amount)) %>% ggplot() + geom_histogram(aes(x = loan_amount), bins = 100, color = "grey",fill = "cadetblue3") + labs(title = "Log-Transformed Distribution of Loan_Amount", x = "Log of Loan_Amount", y = "Frequency") + theme_minimal()
 train %>% slice_max(loan_amount)
-train %>% select(loan_amount) %>% summary()
+train %>% dplyr::select(loan_amount) %>% summary()
 
 # RESULT: loan_amount is so distributed still even after a log transformation, there must be some sort of scaling and normalization of loan_amount
 
@@ -151,7 +151,7 @@ train %>% filter(income < 0) %>% ggplot() + geom_bar(aes(x = action_taken)) + la
 normalize_neg1_pos1 <- function(x){(2*(x - min(x)) / (max(x) - min(x))) - 1}
 normalize_neg1_pos1(seq(-10,5))
 # make label of which loan applicant is negative and positive
-lab_income_train <- train %>% select(income) %>% filter(!is.na(income)) %>% mutate(posIncome = if_else(income >= 0, TRUE, FALSE))
+lab_income_train <- train %>% dplyr::select(income) %>% filter(!is.na(income)) %>% mutate(posIncome = if_else(income >= 0, TRUE, FALSE))
 
 # lab_income_plot <- lab_income_train %>% filter(posIncome == TRUE) %>% ggplot(aes(x = income)) + geom_bar(stat = "identity", position = "identity")
 # TODO: make bidrectional graph showing distribution of negative and positive income for each bracket of income
@@ -343,6 +343,8 @@ rec <- rec %>%
   step_impute_roll(income, combined_loan_to_value_ratio, property_value, window = 13) %>%
   # fix state NA's
   step_mutate_at(state, fn = function(x) if_else(is.na(x), "NA", x)) %>%
+  # fix age_of_applicant_62 NA's
+  step_mutate_at(age_of_applicant_62, fn = function(x) if_else(is.na(x), "NA", x)) %>%
   # fix age_of_co_applicant_62 NA's
   step_mutate_at(age_of_co_applicant_62, fn = function(x) if_else(is.na(x), "NA", x)) %>%
   # filter out numeric variables that still have NA's
@@ -363,9 +365,10 @@ rec <- rec %>%
   step_mutate_at(action_taken, fn = function(x) as.factor(x))
 
 # # test recipe
-rec_test <- suppressWarnings(rec %>% prep() %>% bake(new_data = NULL))
-# nrow(test)
-rec_test %>% select_if(function(x) any(is.na(x)))
+# rec_test <- suppressWarnings(rec %>% prep() %>% bake(new_data = NULL))
+# # nrow(test)
+# rec_test %>% select_if(function(x) any(is.na(x)))
+# head(rec_test)
 # train %>% dplyr::select(income, combined_loan_to_value_ratio, property_value)
 # rec_test %>% filter(action_taken == "3")
 # rec_test %>% dplyr::select(income) %>% slice_max(order_by = income, n = 20)
@@ -383,11 +386,11 @@ wf_metrics <- metric_set(roc_auc, f_meas)
 
 ```{r workflow}
 
-wf_test <- workflow() %>% add_model(lin_disc_model) %>% add_recipe(rec)
-# wf_test_res <- wf_test %>% fit_resamples(resamples = train_folds, metrics = wf_metrics)
-# wf_test_res_metrics <- wf_test_res %>% collect_metrics()
-wf_test_tune <- wf_test %>% tune_grid(resamples = train_folds, grid = 5, metrics = wf_metrics)
-wf_test_tune_res <- wf_test_tune %>% collect_metrics()
+# wf_test <- workflow() %>% add_model(lin_disc_model) %>% add_recipe(rec)
+# # wf_test_res <- wf_test %>% fit_resamples(resamples = train_folds, metrics = wf_metrics)
+# # wf_test_res_metrics <- wf_test_res %>% collect_metrics()
+# wf_test_tune <- wf_test %>% tune_grid(resamples = train_folds, grid = 5, metrics = wf_metrics)
+# wf_test_tune_res <- wf_test_tune %>% collect_metrics()
 
 wf_set <- workflow_set(preproc = recipe_list, models = model_list, cross = TRUE)
 
