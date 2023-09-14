@@ -1,0 +1,576 @@
+```{r, echo = FALSE, message=FALSE}
+library(knitr)
+library(tidyverse)
+library(tidymodels)
+library(stringr)
+library(corrplot)
+library(yardstick)
+library(ranger)
+library(xgboost)
+library(baguette)
+library(glmnet)
+library(kknn)
+library(stacks)
+library(discrim)
+library(MASS)
+library(earth)
+library(brulee)
+library(klaR)
+library(keras)
+library(reticulate)
+
+```
+
+```{r RUN THIS: data setup}
+
+# SET THE WD TO YOUR FOLDER
+
+trainFilepath <- paste0(getwd(),"/train2.csv")
+testFilepath <- paste0(getwd(),"/test2.csv")
+metadataFilepath <- paste0(getwd(),"/metadata.csv")
+
+train <- read.csv(trainFilepath)
+test <- read.csv(testFilepath)
+metadata <- read.csv(metadataFilepath)
+
+```
+
+```{r data view}
+
+nrow(train)
+ncol(train)
+
+head(train)
+
+```
+
+```{r data analysis}
+
+summary(train)
+train %>% colnames()
+train %>% select_if(function(x) any(is.na(x))) %>% colnames()
+head(train)
+# list of NA columns:
+#  [1] "state"                                      "ethnicity_of_applicant_or_borrower_1"      
+#  [3] "ethnicity_of_applicant_or_borrower_2"       "ethnicity_of_applicant_or_borrower_3"      
+#  [5] "ethnicity_of_applicant_or_borrower_4"       "ethnicity_of_applicant_or_borrower_5"      
+#  [7] "ethnicity_of_co_applicant_or_co_borrower_1" "ethnicity_of_co_applicant_or_co_borrower_2"
+#  [9] "ethnicity_of_co_applicant_or_co_borrower_3" "ethnicity_of_co_applicant_or_co_borrower_4"
+# [11] "ethnicity_of_co_applicant_or_co_borrower_5" "race_of_applicant_or_borrower_1"           
+# [13] "race_of_applicant_or_borrower_2"            "race_of_applicant_or_borrower_3"           
+# [15] "race_of_applicant_or_borrower_4"            "race_of_applicant_or_borrower_5"           
+# [17] "race_of_co_applicant_or_co_borrower_1"      "race_of_co_applicant_or_co_borrower_2"     
+# [19] "race_of_co_applicant_or_co_borrower_3"      "race_of_co_applicant_or_co_borrower_4"     
+# [21] "race_of_co_applicant_or_co_borrower_5"      "age_of_applicant_62"                       
+# [23] "age_of_co_applicant_62"                     "income"                                    
+# [25] "total_points_and_fees"                      "prepayment_penalty_term"                   
+# [27] "combined_loan_to_value_ratio"               "loan_term"                                 
+# [29] "introductory_rate_period"                   "property_value"                            
+# [31] "multifamily_affordable_units"               "automated_underwriting_system_2"           
+# [33] "automated_underwriting_system_3"            "automated_underwriting_system_4"           
+# [35] "automated_underwriting_system_5"  
+
+# RESULTS:
+# state: replace all NA's with char "NA", then dummy encoding to represent each state including NA's (better than onehot to avoid collinearity)
+# ethnicity columns: remove all rows with eth_1 NA, then set all cols with eth_of with NA = 4, then dummy encode
+# race of columns: first, remove the rows that have race_1 NA, then set all cols with race_of with NA = 7, then dummy encode
+# age of columns: dummy encoding to represent age over 62 bool
+# income: impute via knn
+# total_points and fees: remove col, its just NA's
+# train %>% pull(total_points_and_fees) %>% unique()
+# prepayment: change to character and then dummy encode (either 36 or NA)
+# train %>% pull(prepayment_penalty_term) %>% unique()
+# combined: impute via knn
+# train %>% pull(combined_loan_to_value_ratio)
+# loan_term: remove rows with NA loan_term, few rows with no loan_term
+# train %>% dplyr::select(loan_term) %>% summary()
+# train %>% dplyr::select(loan_term) %>% distinct()
+# introductory: remove col (too little observations to be significant predictor)
+# train %>% dplyr::select(introductory_rate_period) %>% mutate(isNA = is.na(introductory_rate_period)) %>% group_by(isNA) %>% count()
+# property: impute via KNN (4916 nas)
+# train %>% dplyr::select(property_value) %>% summary()
+# multifamily: remove col, too little observations
+# train %>% dplyr::select(multifamily_affordable_units) %>% mutate(isNA = is.na(multifamily_affordable_units)) %>% group_by(isNA) %>% count()
+# automated: mutate all NA's = 6, then dummy encode all automated system cols
+# train %>% dplyr::select(automated_underwriting_system_2) %>% distinct()
+
+# PROBLEM: REPRESENTATION OF CATEGORIES
+# RESULT: dummy encode the following columns
+# loan_type, loan_purpose, preapproval, construction_method, occupancy_type, sex cols, hoepa_status, lien_status, applicant_credit_scoring_model, co_applicant_credit_scoring_model, balloon_payment, interest_only_payments, negative_amortization, other_non_amortizing_features, manufactured_home_secured_property_type,manufactured_home_land_property_interest, submission_of_application, initially_payable_to_your_institution, reverse_mortgage, open_end_line_of_credit, business_or_commercial_purpose
+# view(colnames(train))
+# train %>% dplyr::select(negative_amortization) %>% distinct()
+
+# PROBLEM: character columns
+train %>% select_if(is.character)
+train %>% dplyr::select(total_units) %>% n_distinct() 
+
+# RESULT: 
+# remove ID and identifier
+# dummy encode age_of_applicant_or_borrower and age_of_co_applicant_or_co_borrower 
+train %>% dplyr::select(age_of_co_applicant_or_co_borrower) %>% distinct()
+# total units: dummy encode (only 9 categories)
+
+
+# # CORRELATION WITH action_taken, loan_amount, income,
+# train %>% colnames()
+# train %>% dplyr::select()
+
+# PROBLEM: same value cols and useless value cols
+train %>% dplyr::select(legal_entity_identifier_lei) %>% distinct()
+train %>% dplyr::select(activity_year) %>% distinct()
+train %>% dplyr::select(race_of_applicant_or_borrower_5) %>% summary()
+# RESULT: remove id, activity_year, legal_entity_identifier_lei
+
+# ------------------------------------------------------------------------------
+
+# SUMMARY OF RECIPE:
+# removing: id, activity_year, legal_entity_identifier_lei, total_points_and_fees, introductory_rate_period, multifamily_affordable_units, 
+# filter NA: loan_term
+# mutating: starts_with(ethnicity_of) (NA = 4), starts_with(race_of) (NA = 7), starts_with(automated_underwriting_system) (NA = 6)
+# imputation via KNN: income, combined_loan_to_value_ratio, property_value
+# normalization: income, loan_amount, property_value, combined_loan_to_value_ratio
+# dummy encoding: every nominal predictor (non numeric predictor)
+
+# ------------------------------------------------------------------------------
+
+# action_taken analysis
+action_taken_dist_plot <- train %>% ggplot() + geom_histogram(aes(x = action_taken), binwidth = 1, color = "grey", fill = "burlywood4") + labs(title = "Action_Taken Frequencies", x = "Loan Approved/Loan Denied", y = "Frequency of Loan Applications") + theme_minimal()
+
+# NOTE: mathematically, should we change all 3's into 2's? just thinking of the math of the models, and the decision making algorithm might work better with values of 1 and 2 rather 1 and 3
+
+# ANALYZE loan amount analysis
+loan_dist_plot <- train %>% mutate(loan_amount = log(loan_amount)) %>% ggplot() + geom_histogram(aes(x = loan_amount), bins = 100, color = "grey",fill = "cadetblue3") + labs(title = "Log-Transformed Distribution of Loan_Amount", x = "Log of Loan_Amount", y = "Frequency") + theme_minimal()
+train %>% slice_max(loan_amount)
+train %>% dplyr::select(loan_amount) %>% summary()
+
+# RESULT: loan_amount is so distributed still even after a log transformation, there must be some sort of scaling and normalization of loan_amount
+
+# ANALYZE income
+train %>% slice_min(income, n = 10)
+# umm, why are there negative incomes? for people in debt?
+# get which people are negative incomes, plot their loan status
+train %>% filter(income < 0) %>% ggplot() + geom_bar(aes(x = action_taken)) + labs(title = "Action_Taken for Applicants with Negative Income", x = "Action_Taken (1 = Loan Approve, 3 = Loan Denied)", y = "Frequency")
+normalize_neg1_pos1 <- function(x){(2*(x - min(x)) / (max(x) - min(x))) - 1}
+normalize_neg1_pos1(seq(-10,5))
+# make label of which loan applicant is negative and positive
+lab_income_train <- train %>% dplyr::select(income) %>% filter(!is.na(income)) %>% mutate(posIncome = if_else(income >= 0, TRUE, FALSE))
+
+# lab_income_plot <- lab_income_train %>% filter(posIncome == TRUE) %>% ggplot(aes(x = income)) + geom_bar(stat = "identity", position = "identity")
+# TODO: make bidrectional graph showing distribution of negative and positive income for each bracket of income
+# highly right skewed graph
+
+
+# ANALYZE property_value
+train %>% dplyr::select(property_value) %>% ggplot() + geom_boxplot(aes(x = property_value))
+# RESULT: heavily right skewed, must normalize
+
+
+# ANALYZE: combined_loan_to_value_ratio
+train %>% dplyr::select(combined_loan_to_value_ratio) %>% ggplot() + geom_boxplot(aes(x = combined_loan_to_value_ratio))
+# RESULT: heavily right skewed, must normalize
+
+
+# TODO
+# # ANALYZE ethinicity applicant
+# train %>% select(12:16) %>% summary()
+
+# ANALYZE race frequency
+
+# get caption to look okay
+# metadata$X
+cap_str <- gsub("[[:blank:]](?=\\d)", " \\| ","1. American Indian or Alaska Native 2. Asian 21. Asian Indian 22. Chinese 23. Filipino \n24. Japanese 25. Korean 26. Vietnamese 27. Other Asian 3. Black or African American \n4. Native Hawaiian or Other Pacific Islander 41. Native Hawaiian \n42. Guamanian or Chamorro 43. Samoan 44. Other Pacific Islander 5. White \n6. Information not provided by applicant in mail internet or telephone application 7. Not applicable.", perl = TRUE)
+
+train %>% filter(!is.na(race_of_applicant_or_borrower_1)) %>% ggplot(aes(x = race_of_applicant_or_borrower_1)) + geom_bar()
+race_df <- train %>% pull(race_of_applicant_or_borrower_1) %>% as.character() %>% as.data.frame() 
+race_df <- rename(race_df, race = .) %>% mutate(n = 1) %>% group_by(race) %>% summarize(count = n())
+loan_app_race_freq_plot <- race_df %>% ggplot() + 
+  geom_bar(aes(x = race, y = count), stat = "identity", fill = "lightblue", color = "grey") + 
+  labs(title = "Loan Applicant's Primary Race Frequencies", x = "Race ID", caption = cap_str, y = "Frequency") + 
+  theme(plot.caption = element_text(size = 9, hjust = 0)) + theme_minimal()
+
+# str_view_all("1.| American Indian or Alaska Native 2. Asian 21. Asian Indian 22. Chinese 23. Filipino \n24. Japanese 25. Korean 26. Vietnamese 27. Other Asian 3. Black or African American \n4. Native Hawaiian or Other Pacific Islander 41. Native Hawaiian \n42. Guamanian or Chamorro 43. Samoan 44. Other Pacific Islander 5. White \n6. Information not provided by applicant in mail internet or telephone application 7. Not applicable.", "\\|")
+# gsub(" (?=2)","\\|","hello 2world", perl = TRUE)
+
+# RESULT: this graph showcases that even in the primary applicant's race category, the majority of the races is white, so stratify all the race columns for a recipe
+
+
+# ANALYZE age frequency
+# TODO
+
+# ANALYZE na's in every column (make bar chart)
+na_test <- read_csv("na.csv")
+na_test$predictor <- as.factor(na_test$predictor)
+na_plot <- ggplot(na_test) + geom_bar(aes(x = predictor, y = NAs), stat = "identity") + theme(axis.text.x = element_text(angle = 90, size = 6)) + labs(title = "Amount of NA's in each Predictor Variable", x = "Predictor ID", y = "Amount")
+
+```
+
+```{r RUN THIS: training and test data change colsToRemove larger}
+
+# makes it easier to implement model
+
+colsToRemove <- c("id","activity_year", "legal_entity_identifier_lei", "total_points_and_fees", "co_applicant_or_co_borrower_name_and_version_of_credit_scoring_model", "ethnicity_of_applicant_or_borrower_3", "ethnicity_of_applicant_or_borrower_4", "ethnicity_of_applicant_or_borrower_5", "ethnicity_of_co_applicant_or_co_borrower_3", "ethnicity_of_co_applicant_or_co_borrower_4", "ethnicity_of_co_applicant_or_co_borrower_5", "race_of_applicant_or_borrower_3", "race_of_applicant_or_borrower_4", "race_of_applicant_or_borrower_5", "race_of_co_applicant_or_co_borrower_4", "race_of_co_applicant_or_co_borrower_5")
+
+# TRAINING DATA
+
+# remove missing rows based on this variable ****NEW*** Eric's Addition
+# train <- train %>% drop_na(age_of_co_applicant_62)
+
+# remove unnecessary cols
+train <- train %>% dplyr::select(-colsToRemove)
+
+# make the output a factor
+train$action_taken <- as.factor(train$action_taken) 
+
+# group numeric cols together in the beginning (income, loan_amount, property_value, combined_loan_to_value_ratio)
+train <- train %>% relocate(income, .before = loan_type) %>% relocate(loan_amount, .before = loan_type) %>% relocate(property_value, .before = loan_type) %>% relocate(combined_loan_to_value_ratio, .before = loan_type)
+
+# TESTING DATA
+
+# remove unnecessary cols
+test <- test %>% dplyr::select(-colsToRemove)
+
+# group numeric cols together in the beginning (income, loan_amount, property_value, combined_loan_to_value_ratio)
+test <- test %>% relocate(income, .before = loan_type) %>% relocate(loan_amount, .before = loan_type) %>% relocate(property_value, .before = loan_type) %>% relocate(combined_loan_to_value_ratio, .before = loan_type)
+
+```
+
+```{r RUN THIS: training and test data change -- Luke's colsToRemove}
+
+# makes it easier to implement model
+
+colsToRemove <- c("id","activity_year", "legal_entity_identifier_lei", "total_points_and_fees", "introductory_rate_period", "multifamily_affordable_units", "ethnicity_of_co_applicant_or_co_borrower_4", "ethnicity_of_co_applicant_or_co_borrower_5", "race_of_co_applicant_or_co_borrower_4", "race_of_co_applicant_or_co_borrower_5")
+
+
+# TRAINING DATA
+
+# remove unnecessary cols
+train <- train %>% dplyr::select(-colsToRemove)
+
+# make the output a factor
+train$action_taken <- as.factor(train$action_taken) 
+
+# group numeric cols together in the beginning (income, loan_amount, property_value, combined_loan_to_value_ratio)
+train <- train %>% relocate(income, .before = loan_type) %>% relocate(loan_amount, .before = loan_type) %>% relocate(property_value, .before = loan_type) %>% relocate(combined_loan_to_value_ratio, .before = loan_type)
+
+# TESTING DATA
+
+# remove unnecessary cols
+test <- test %>% dplyr::select(-colsToRemove)
+
+# group numeric cols together in the beginning (income, loan_amount, property_value, combined_loan_to_value_ratio)
+test <- test %>% relocate(income, .before = loan_type) %>% relocate(loan_amount, .before = loan_type) %>% relocate(property_value, .before = loan_type) %>% relocate(combined_loan_to_value_ratio, .before = loan_type)
+
+```
+
+
+```{r Eric's Subsampling}
+set.seed(10)
+data_split <- initial_split(train, prop = .1, strata = action_taken)
+
+train_sample <- training(data_split)
+train_test_sample <- testing(data_split)
+train_sample$action_taken <- as.factor(train_sample$action_taken)
+
+train_sample_folds <- vfold_cv(train_sample, v=10, strata = action_taken)
+```
+
+
+
+--------------------------------------------
+
+# BE CAREFUL TO NOT RUN EVERY FOLLOWING BLOCK OF CODE, each one makes a different training split
+
+```{r training split based on action_taken}
+# NOTE: don't run the entire script, the var name "train_split" will be shared
+set.seed(101)
+
+# stratify the response variable because uneven distribution of classes
+train_split <- train %>% initial_split(strata = action_taken)
+
+train_train <- training(train_split)
+train_test <- testing(train_split)
+
+```
+
+--------------------------------------------
+
+```{r vfold creaction}
+
+# always going to stratify by response variable
+train_folds <- vfold_cv(train_train, v = 10, strata = action_taken)
+
+```
+
+
+```{r model declaration}
+
+decision_tree_model <- decision_tree(cost_complexity = tune()) %>% set_engine("rpart") %>% set_mode("classification")
+
+boost_tree_model <- boost_tree(learn_rate = tune()) %>% set_engine("xgboost") %>% set_mode("classification")
+
+# r_forest_model <- rand_forest(min_n = tune()) %>% set_engine("ranger") %>% set_mode("classification")
+
+# nn_model <- bag_mlp(hidden_units = tune(), epochs = 500) %>% set_engine("nnet") %>% set_mode("classification")
+
+# LDA models don't like how constant some variables are in the data
+# lin_disc_model <- discrim_linear() %>% set_engine("MASS") %>% set_mode("classification") 
+# 
+# flex_lin_disc_model <- discrim_flexible(num_terms = tune(), prod_degree = tune()) %>% set_engine("earth") %>% set_mode("classification")
+
+log_model <- logistic_reg() %>% set_engine("glm") %>% set_mode("classification")
+
+nn_model <- mlp(hidden_units = tune(), epochs = 500, learn_rate = tune(), activation = "relu") %>% set_engine("brulee") %>% set_mode("classification") %>% translate()
+
+bayes_model <- naive_Bayes(smoothness = tune()) %>% set_engine("klaR") %>% set_mode("classification")
+
+model_list <- list(decision_tree_model = decision_tree_model, boost_tree_model = boost_tree_model, bayes_model = bayes_model, nn_model = nn_model, log_model = log_model)
+
+
+```
+
+
+
+
+```{r recipe creation}
+
+#rec1 <- recipe(action_taken ~ ., data = train_train)
+# Based on Eric's subsampling
+rec1 <- recipe(action_taken ~ ., data = train_sample)
+
+
+# DOESN'T MATTER BECAUSE CLASSIFICATION WORRIES ABOUT LABELS, NOT NUMERIC VALUE
+# # making new training dataset that changes 3's into 2's
+# rec2 <- recipe(action_taken ~ ., data = train_train) %>% step_mutate_at(action_taken, fn = function(x) if_else(x == 3, 2, 1))
+# # head(rec2 %>% prep() %>% bake(new_data = NULL) %>% select(action_taken), n =20)
+
+# original recipe
+# rec <- rec %>% 
+#   # filtering NA's from predictors with few NA's
+#   step_filter(!is.na(loan_term)) %>%
+#   # mutating in prep for dummy encoding
+#   step_mutate_at(starts_with("ethnicity_of"), fn = function(x) if_else(is.na(x), 4, x)) %>%
+#   step_mutate_at(starts_with("race_of"), fn = function(x) if_else(is.na(x), 7, x)) %>%
+#   step_mutate_at(starts_with("automated_underwriting_system"), fn = function(x) if_else(is.na(x), 6, x)) %>%
+#   # imputation of numeric variables
+#   step_impute_knn(income, combined_loan_to_value_ratio, property_value) %>%
+#   # transformation of numeric variables
+#   step_log(loan_amount, income, combined_loan_to_value_ratio, property_value) %>%
+#   dummy encoding of nominal variables
+#   step_dummy(loan_type:business_or_commercial_purpose)
+
+# SET WHICH RECIPE TO USE
+rec <- rec1
+
+# imputation via knn took forever, so switched to linear regression imputation
+rec <- rec %>% 
+  # filtering NA's from predictors with few NA's
+  step_filter(!is.na(loan_term)) %>%
+  # mutating in prep for dummy encoding
+  step_mutate_at(starts_with("ethnicity_of"), fn = function(x) if_else(is.na(x), 4, x)) %>%
+  step_mutate_at(starts_with("race_of"), fn = function(x) if_else(is.na(x), 7, x)) %>%
+  step_mutate_at(starts_with("automated_underwriting_system"), fn = function(x) if_else(is.na(x), 6, x)) %>%
+  # change numeric cols into double for imputation
+  step_mutate_at(loan_amount, income, combined_loan_to_value_ratio, property_value, fn = function(x) as.double(x)) %>%
+  # imputation of numeric variables, rolling works better because linear reg cannot work with NA's, and KNN takes forever
+  # step_impute_roll(income, combined_loan_to_value_ratio, property_value, window = 13) %>%
+  # fix state NA's
+  step_mutate_at(state, fn = function(x) if_else(is.na(x), "NA", x)) %>%
+  # fix age_of_applicant_62 NA's
+  step_mutate_at(age_of_applicant_62, fn = function(x) if_else(is.na(x), "NA", x)) %>%
+  # fix age_of_co_applicant_62 NA's
+  step_mutate_at(age_of_co_applicant_62, fn = function(x) if_else(is.na(x), "NA", x)) %>%
+  # filter out numeric variables that still have NA's
+  step_filter(!is.na(income) & !is.na(combined_loan_to_value_ratio) & !is.na(property_value)) %>%
+  # since income can be negative, it cannot log transform correctly, so must shift by minimum of income so lowest would be value of 1
+  step_mutate_at(income, fn = function(x) x <- abs(min(x)) + x + 1) %>%
+  # transformation of numeric variables
+  step_log(loan_amount, income, combined_loan_to_value_ratio, property_value) %>% 
+  # change all nominal variables into characters
+  step_mutate_at(all_predictors(), -loan_amount, -income, -combined_loan_to_value_ratio, -property_value, fn = function(x) as.factor(x)) %>% 
+  # normalize all numeric predictors
+  # step_normalize(all_numeric_predictors()) %>%
+  # remove zero variance variables
+  step_zv(all_predictors()) %>%
+  # remove near zero variance variables (for LDA to sorta work better)
+  step_nzv(all_predictors()) %>%
+  # dummy encoding of nominal variables
+  step_dummy(all_predictors(), -loan_amount, -income, -combined_loan_to_value_ratio, -property_value)
+  # change the outcome variable to be a factor
+
+# # test recipe
+# rec_test <- suppressWarnings(rec %>% prep() %>% bake(new_data = NULL))
+# # nrow(test)
+# rec_test %>% select_if(function(x) any(is.na(x)))
+# head(rec_test)
+# train %>% dplyr::select(income, combined_loan_to_value_ratio, property_value)
+# rec_test %>% filter(action_taken == "3")
+# rec_test %>% dplyr::select(income) %>% slice_max(order_by = income, n = 20)
+# train %>% dplyr::select(contains("age_of_applicant_62"))
+
+recipe_list <- list(rec = rec)
+
+```
+
+```{r metric set creation}
+
+wf_metrics <- metric_set(roc_auc, f_meas)
+
+```
+
+
+```{r Eric's Subsampling}
+set.seed(10)
+data_split <- initial_split(train, prop = .1, strata = action_taken)
+
+train_sample <- training(data_split)
+train_test_sample <- testing(data_split)
+train_sample$action_taken <- as.factor(train_sample$action_taken)
+
+train_sample_folds <- vfold_cv(train_sample, v=10, strata = action_taken)
+```
+
+```{r workflow}
+set.seed(10)
+# wf_test <- workflow() %>% add_model(lin_disc_model) %>% add_recipe(rec)
+# # wf_test_res <- wf_test %>% fit_resamples(resamples = train_folds, metrics = wf_metrics)
+# # wf_test_res_metrics <- wf_test_res %>% collect_metrics()
+# wf_test_tune <- wf_test %>% tune_grid(resamples = train_folds, grid = 5, metrics = wf_metrics)
+# wf_test_tune_res <- wf_test_tune %>% collect_metrics()
+
+wf_set <- workflow_set(preproc = recipe_list, models = model_list, cross = TRUE)
+
+wf_set_res <- wf_set %>% workflow_map(fn = "tune_grid", resamples = train_sample_folds, grid = 5, verbose = TRUE, metrics = wf_metrics)
+
+autoplot(wf_set_res)
+wf_set_res %>% collect_metrics() %>% filter(.metric == "f_meas") %>% arrange(desc(mean))
+```
+
+```{r boosted tree tune on subsample -- non ommitted rows}
+### Boosted Tree -- Optimally tuned at: learn rate =  )
+set.seed(10)
+wf_bt <- workflow() %>% add_model(boost_tree_model) %>% add_recipe(rec)
+
+recipes_param <- extract_parameter_set_dials(boost_tree_model)
+
+grid_bt <- grid_regular(
+  learn_rate(range = c(.0008, .0012),
+             trans = NULL),
+  levels = 5)
+
+wf_bt_res <- wf_bt %>% tune_grid(resamples = train_sample_folds, grid = grid_bt, metrics = wf_metrics)
+
+autoplot(wf_bt_res)
+
+wf_bt_res %>% collect_metrics() %>% filter(.metric == "f_meas") %>% arrange(desc(mean))
+```
+
+
+
+```{r boosted tree tune testing f measure on training-test}
+final_wf_param <- wf_bt_res %>% select_best(metric = "f_meas")
+
+final_model <- finalize_workflow(wf_bt, final_wf_param)
+
+final_model_fit <- final_model %>% fit(data = train_sample)
+
+preds_sample <- final_model_fit %>% predict(new_data = train_test_sample)
+
+training_pred_chart <- train_test_sample %>% dplyr:::select(action_taken) %>% bind_cols(preds_sample)
+
+f_meas(truth = action_taken, estimate = .pred_class, data = training_pred_chart)
+```
+
+
+```{r boosted tree tune printing results on full train on test}
+final_wf_param <- wf_bt_res %>% select_best(metric = "f_meas")
+
+final_model <- finalize_workflow(wf_bt, final_wf_param)
+
+final_model_fit <- final_model %>% fit(data = train)
+
+# make predictions
+preds <- final_model_fit %>% predict(new_data = test)
+test <- read.csv(testFilepath)
+test_preds <- test %>% dplyr::select(id) %>% bind_cols(preds) %>% rename(action_taken = .pred_class)
+
+# export predictions
+write_csv(test_preds, "boostedpred3.csv")
+```
+
+
+
+
+
+
+```{r logistic test}
+set.seed(10)
+data_split <- initial_split(train, prop = .1, strata = action_taken)
+
+train_sample <- training(data_split)
+train_test_sample <- testing(data_split)
+train_sample$action_taken <- as.factor(train_sample$action_taken)
+
+train_sample_split <- vfold_cv(train_sample, v=10, strata = action_taken)
+
+log_mod <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+log_wf <- workflow() %>%
+  add_model(log_mod) %>%
+  add_recipe(rec)
+
+log_fit <- log_wf %>% fit(data = train_sample)
+
+log_cl_res <- log_wf %>%
+  fit_resamples(
+    resamples = train_sample_split,
+    metrics = wf_metrics,
+  )
+
+log_cl_res %>% collect_metrics()
+
+
+log_fitted <- log_fit %>% predict(new_data = train_sample)
+
+sample_results <- log_fitted %>% bind_cols(train_sample$action_taken)
+
+f_meas(sample_results, truth = ...2, estimate = .pred_class)
+
+log_preds <- log_fit %>% predict(new_data = test)
+
+test <- read.csv(testFilepath)
+
+test_results <- test %>% dplyr::select(id) %>% bind_cols(log_preds) %>% dplyr::rename(action_taken = .pred_class)
+
+write_csv(test_results, "log_test0.csv")
+
+```
+
+```{r Mayerli's plots}
+plot1 <- ggplot(train, aes(x = as.factor(action_taken), y = loan_amount)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Loan Amount by Action Taken", x = "Action Taken", y = " Loan Amount") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot2 <- ggplot(train, aes(x = as.factor(action_taken), y = property_value)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Property Value by Action Taken", x = "Action Taken", y = "Property Value") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot3 <- ggplot(train, aes(x = as.factor(action_taken), y = income)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Income by Action Taken", x = "Action Taken", y = "Income") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+plot4 <- ggplot(train, aes(x = as.factor(action_taken), y = combined_loan_to_value_ratio)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Loan to Value Ratio by Action Taken", x = "Action Taken", y = "Loan to Value Ratio") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
